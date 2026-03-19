@@ -31,4 +31,4 @@ flutter create . --project-name mind_tape --org com.mindtape --platforms android
   - Tap mic again to stop
   - Recognized text updates live in the answer box
 
-Next (MVP phase 2): save the 4 answers for the day to SQLite, then add History and Detail screens.
+MVP phase 2: save the 4 answers for the day to SQLite, then add History and Detail screens.
