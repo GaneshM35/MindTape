@@ -25,6 +25,10 @@ flutter create . --project-name mind_tape --org com.mindtape --platforms android
 
 - Project layout under `lib/` (`models/`, `services/`, `screens/`, `widgets/`)
 - `JournalEntry` model and SQLite `DatabaseService` (ready for save/history next)
-- Basic `HomeScreen`: one question at a time, **Next** / **Back**, large mic (placeholder until `speech_to_text`)
+- Basic `HomeScreen`: one question at a time, **Next** / **Back**, large mic
+- Speech-to-text wired up via `speech_to_text`
+  - Tap mic to start listening
+  - Tap mic again to stop
+  - Recognized text updates live in the answer box
 
-Confirm when you want the next step: speech-to-text + wiring answers + **Save** to SQLite.
+Next (MVP phase 2): save the 4 answers for the day to SQLite, then add History and Detail screens.
