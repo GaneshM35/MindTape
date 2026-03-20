@@ -1,13 +1,39 @@
-/// One daily reflection: calendar date plus four guided answers.
+import 'reflection_questions.dart';
+
+/// How the user chose to journal for that day (persisted in SQLite).
+enum ReflectionMode {
+  minimum,
+  deep,
+  mindDump;
+
+  String get dbValue => switch (this) {
+        ReflectionMode.minimum => 'minimum',
+        ReflectionMode.deep => 'deep',
+        ReflectionMode.mindDump => 'mind_dump',
+      };
+
+  static ReflectionMode fromDb(String? raw) {
+    switch (raw) {
+      case 'minimum':
+        return ReflectionMode.minimum;
+      case 'mind_dump':
+        return ReflectionMode.mindDump;
+      default:
+        return ReflectionMode.deep;
+    }
+  }
+}
+
+/// One daily reflection: mode, eight answer slots (used by minimum/deep), and optional [mindDumpText].
 class JournalEntry {
-  const JournalEntry({
+  JournalEntry({
     this.id,
     required this.date,
-    required this.answer1,
-    required this.answer2,
-    required this.answer3,
-    required this.answer4,
-  });
+    this.mode = ReflectionMode.deep,
+    required List<String> answers,
+    this.mindDumpText = '',
+  })  : assert(answers.length == reflectionPrompts.length),
+        answers = List<String>.from(answers);
 
   /// SQLite row id; null before insert.
   final int? id;
@@ -15,23 +41,31 @@ class JournalEntry {
   /// Calendar day in local time, stored as `YYYY-MM-DD`.
   final DateTime date;
 
-  final String answer1;
-  final String answer2;
-  final String answer3;
-  final String answer4;
+  final ReflectionMode mode;
+
+  /// For [ReflectionMode.minimum] only the first [minimumReflectionPrompts.length]
+  /// slots are used; [ReflectionMode.deep] uses all; [ReflectionMode.mindDump] leaves these empty.
+  final List<String> answers;
+
+  /// Free-form text when [mode] is [ReflectionMode.mindDump].
+  final String mindDumpText;
 
   /// Stable string for DB uniqueness and sorting (local calendar date).
   String get dateKey =>
       '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
 
-  Map<String, Object?> toMap() => {
-        'id': id,
-        'date': dateKey,
-        'answer1': answer1,
-        'answer2': answer2,
-        'answer3': answer3,
-        'answer4': answer4,
-      };
+  Map<String, Object?> toMap() {
+    final m = <String, Object?>{
+      'id': id,
+      'date': dateKey,
+      'entry_mode': mode.dbValue,
+      'mind_dump': mindDumpText,
+    };
+    for (var i = 0; i < answers.length; i++) {
+      m['answer${i + 1}'] = answers[i];
+    }
+    return m;
+  }
 
   static JournalEntry fromMap(Map<String, Object?> map) {
     final dateStr = map['date'] as String;
@@ -40,31 +74,33 @@ class JournalEntry {
     final m = int.parse(parts[1]);
     final d = int.parse(parts[2]);
 
+    final answers = List<String>.generate(
+      reflectionPrompts.length,
+      (i) => map['answer${i + 1}'] as String? ?? '',
+    );
+
     return JournalEntry(
       id: map['id'] as int?,
       date: DateTime(y, m, d),
-      answer1: map['answer1'] as String? ?? '',
-      answer2: map['answer2'] as String? ?? '',
-      answer3: map['answer3'] as String? ?? '',
-      answer4: map['answer4'] as String? ?? '',
+      mode: ReflectionMode.fromDb(map['entry_mode'] as String?),
+      answers: answers,
+      mindDumpText: map['mind_dump'] as String? ?? '',
     );
   }
 
   JournalEntry copyWith({
     int? id,
     DateTime? date,
-    String? answer1,
-    String? answer2,
-    String? answer3,
-    String? answer4,
+    ReflectionMode? mode,
+    List<String>? answers,
+    String? mindDumpText,
   }) {
     return JournalEntry(
       id: id ?? this.id,
       date: date ?? this.date,
-      answer1: answer1 ?? this.answer1,
-      answer2: answer2 ?? this.answer2,
-      answer3: answer3 ?? this.answer3,
-      answer4: answer4 ?? this.answer4,
+      mode: mode ?? this.mode,
+      answers: answers ?? List<String>.from(this.answers),
+      mindDumpText: mindDumpText ?? this.mindDumpText,
     );
   }
 }

@@ -16,9 +16,6 @@ class DetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final questions = reflectionQuestions;
-    final answers = <String>[entry.answer1, entry.answer2, entry.answer3, entry.answer4];
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Journal Entry'),
@@ -37,28 +34,67 @@ class DetailScreen extends StatelessWidget {
                     ),
               ),
               const SizedBox(height: 18),
-              for (var i = 0; i < questions.length; i++) ...[
-                _AnswerSection(
-                  question: questions[i],
-                  answer: answers[i],
-                ),
-                const SizedBox(height: 14),
-              ],
+              ..._buildSections(context),
             ],
           ),
         ),
       ),
     );
   }
+
+  List<Widget> _buildSections(BuildContext context) {
+    switch (entry.mode) {
+      case ReflectionMode.mindDump:
+        return [
+          _AnswerSection(
+            title: 'Mind dump',
+            cue: 'Free flow — no prompts',
+            answer: entry.mindDumpText,
+          ),
+        ];
+      case ReflectionMode.minimum:
+        final out = <Widget>[];
+        for (var i = 0; i < minimumReflectionPrompts.length; i++) {
+          final p = minimumReflectionPrompts[i];
+          out.add(
+            _AnswerSection(
+              title: p.title,
+              cue: p.cue,
+              answer: i < entry.answers.length ? entry.answers[i] : '',
+            ),
+          );
+          out.add(const SizedBox(height: 14));
+        }
+        if (out.isNotEmpty) out.removeLast();
+        return out;
+      case ReflectionMode.deep:
+        final out = <Widget>[];
+        for (var i = 0; i < reflectionPrompts.length; i++) {
+          final p = reflectionPrompts[i];
+          out.add(
+            _AnswerSection(
+              title: p.title,
+              cue: p.cue,
+              answer: i < entry.answers.length ? entry.answers[i] : '',
+            ),
+          );
+          out.add(const SizedBox(height: 14));
+        }
+        if (out.isNotEmpty) out.removeLast();
+        return out;
+    }
+  }
 }
 
 class _AnswerSection extends StatelessWidget {
   const _AnswerSection({
-    required this.question,
+    required this.title,
+    this.cue,
     required this.answer,
   });
 
-  final String question;
+  final String title;
+  final String? cue;
   final String answer;
 
   @override
@@ -78,12 +114,23 @@ class _AnswerSection extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              question,
+              title,
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w600,
                     height: 1.25,
                   ),
             ),
+            if (cue != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                cue!,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.65),
+                      height: 1.3,
+                      fontStyle: FontStyle.italic,
+                    ),
+              ),
+            ],
             const SizedBox(height: 10),
             Text(
               answer.trim().isEmpty ? '—' : answer.trim(),
@@ -98,4 +145,3 @@ class _AnswerSection extends StatelessWidget {
     );
   }
 }
-
