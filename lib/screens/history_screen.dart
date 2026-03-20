@@ -28,12 +28,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   String _preview(JournalEntry entry) {
-    final combined = <String>[
-      entry.answer1,
-      entry.answer2,
-      entry.answer3,
-      entry.answer4,
-    ].where((s) => s.trim().isNotEmpty).join(' ');
+    if (entry.mode == ReflectionMode.mindDump) {
+      final t = entry.mindDumpText.replaceAll(RegExp(r'\s+'), ' ').trim();
+      if (t.isEmpty) return 'No text';
+      if (t.length <= 80) return t;
+      return '${t.substring(0, 80)}…';
+    }
+    final combined =
+        entry.answers.where((s) => s.trim().isNotEmpty).join(' ');
 
     final normalized = combined.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (normalized.isEmpty) return 'No text';

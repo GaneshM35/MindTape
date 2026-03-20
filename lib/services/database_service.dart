@@ -3,6 +3,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../models/journal_entry.dart';
+import '../models/reflection_questions.dart';
 
 /// Local SQLite persistence for [JournalEntry].
 class DatabaseService {
@@ -10,7 +11,7 @@ class DatabaseService {
   static final DatabaseService instance = DatabaseService._();
 
   static const _dbName = 'mindtape.db';
-  static const _dbVersion = 1;
+  static const _dbVersion = 3;
 
   Database? _db;
 
@@ -18,6 +19,20 @@ class DatabaseService {
     if (_db != null) return _db!;
     _db = await _open();
     return _db!;
+  }
+
+  static String get _createEntriesTableSql {
+    final cols = StringBuffer('''
+CREATE TABLE journal_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL UNIQUE,
+''');
+    for (var i = 1; i <= reflectionPrompts.length; i++) {
+      cols.writeln("  answer$i TEXT NOT NULL,");
+    }
+    final sql = cols.toString().trimRight();
+    final fixed = sql.endsWith(',') ? sql.substring(0, sql.length - 1) : sql;
+    return "$fixed,\n  entry_mode TEXT NOT NULL DEFAULT 'deep',\n  mind_dump TEXT NOT NULL DEFAULT ''\n);";
   }
 
   Future<Database> _open() async {
@@ -28,16 +43,24 @@ class DatabaseService {
       path,
       version: _dbVersion,
       onCreate: (db, version) async {
-        await db.execute('''
-CREATE TABLE journal_entries (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  date TEXT NOT NULL UNIQUE,
-  answer1 TEXT NOT NULL,
-  answer2 TEXT NOT NULL,
-  answer3 TEXT NOT NULL,
-  answer4 TEXT NOT NULL
-);
-''');
+        await db.execute(_createEntriesTableSql);
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          for (var i = 5; i <= reflectionPrompts.length; i++) {
+            await db.execute(
+              'ALTER TABLE journal_entries ADD COLUMN answer$i TEXT NOT NULL DEFAULT \'\'',
+            );
+          }
+        }
+        if (oldVersion < 3) {
+          await db.execute(
+            "ALTER TABLE journal_entries ADD COLUMN entry_mode TEXT NOT NULL DEFAULT 'deep'",
+          );
+          await db.execute(
+            "ALTER TABLE journal_entries ADD COLUMN mind_dump TEXT NOT NULL DEFAULT ''",
+          );
+        }
       },
     );
   }
