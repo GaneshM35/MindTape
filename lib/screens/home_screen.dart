@@ -129,25 +129,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _speechStatus = 'done';
   }
 
-  Future<void> _ensureSpeechReady() async {
-    if (_speechReady) return;
-
-    final granted = await _speechService.hasPermission();
-    if (!granted) {
-      if (!mounted) return;
-      setState(() {
-        _speechReady = false;
-        _speechError = 'Microphone permission not granted.';
-        _speechStatus = 'error';
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_speechError),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
+  /// Initializes speech recognition; may show the system microphone prompt
+  /// the first time it runs ([SpeechToText.initialize]).
+  Future<bool> _initializeSpeechPlugin() async {
+    if (_speechReady) return true;
 
     final ok = await _speechService.initialize(
       onError: (message) {
@@ -168,7 +153,7 @@ class _HomeScreenState extends State<HomeScreen> {
       },
     );
 
-    if (!mounted) return;
+    if (!mounted) return false;
     setState(() => _speechReady = ok);
 
     if (!ok && context.mounted) {
@@ -179,6 +164,52 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
     }
+    return ok;
+  }
+
+  Future<void> _ensureSpeechReady() async {
+    await _initializeSpeechPlugin();
+  }
+
+  /// [hasPermission] does not prompt; we explain in-app first, then [initialize] requests OS access.
+  Future<void> _promptForMicAccessOnLaunch() async {
+    if (!mounted) return;
+
+    final alreadyGranted = await _speechService.hasPermission();
+    if (!mounted) return;
+
+    if (alreadyGranted) {
+      await _initializeSpeechPlugin();
+      return;
+    }
+
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Microphone access'),
+          content: Text(
+            'MindTape uses the microphone to turn your spoken reflections into text. '
+            'You can decline and type instead — voice is optional.',
+            style: Theme.of(ctx).textTheme.bodyLarge?.copyWith(height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Not now'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Allow microphone'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted || accepted != true) return;
+    await _initializeSpeechPlugin();
   }
 
   void _goBack() {
@@ -242,6 +273,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _structuredFieldController = TextEditingController();
     _mindDumpFieldController = TextEditingController();
     _checkTodayLogged();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _promptForMicAccessOnLaunch();
+    });
   }
 
   Future<void> _checkTodayLogged() async {
