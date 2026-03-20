@@ -60,13 +60,16 @@ jobs:
           PY
 
       - name: Build release APK
-        run: flutter build apk --release
+        run: |
+          set -euo pipefail
+          flutter build apk --release
+          mv build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/mindtape.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          files: build/app/outputs/flutter-apk/app-release.apk
+          files: build/app/outputs/flutter-apk/mindtape.apk
           fail_on_unmatched_files: true
 
