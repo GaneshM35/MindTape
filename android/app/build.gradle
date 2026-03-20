@@ -4,6 +4,14 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("key.properties")
+def hasKeystoreProperties = keystorePropertiesFile.exists()
+
+if (hasKeystoreProperties) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 android {
     namespace = "com.mindtape.mind_tape"
     compileSdk = flutter.compileSdkVersion
@@ -28,7 +36,18 @@ android {
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.debug
+            signingConfig = hasKeystoreProperties ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    signingConfigs {
+        if (hasKeystoreProperties) {
+            release {
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+            }
         }
     }
 }

@@ -1,0 +1,59 @@
+name: Android Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 'stable'
+          channel: 'stable'
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Decode signing keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > android/release-key.jks
+          cat > android/key.properties <<EOF
+          storePassword=$RELEASE_KEYSTORE_PASSWORD
+          keyPassword=$RELEASE_KEY_PASSWORD
+          keyAlias=$RELEASE_KEY_ALIAS
+          storeFile=release-key.jks
+          EOF
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: build/app/outputs/flutter-apk/app-release.apk
+          fail_on_unmatched_files: true
+

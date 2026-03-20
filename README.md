@@ -32,3 +32,21 @@ flutter create . --project-name mind_tape --org com.mindtape --platforms android
   - Recognized text updates live in the answer box
 
 Next (MVP phase 2): save the 4 answers for the day to SQLite, then add History and Detail screens.
+
+## CI/CD (GitHub Actions)
+
+Milestone releases are created when you push a version tag like `v1.0.0`.
+
+1. Merge your milestone changes to `main`.
+2. Create a tag: `vX.Y.Z` (example: `v1.0.0`) and push it to GitHub.
+3. GitHub Actions will:
+   - build a signed Android release APK (`app-release.apk`)
+   - publish a GitHub Release for that tag with the APK attached
+
+### Android signing secrets
+
+Store these secrets in your GitHub repo settings:
+- `RELEASE_KEYSTORE_BASE64`
+- `RELEASE_KEYSTORE_PASSWORD`
+- `RELEASE_KEY_ALIAS`
+- `RELEASE_KEY_PASSWORD`
