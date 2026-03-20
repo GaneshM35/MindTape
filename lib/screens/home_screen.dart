@@ -4,6 +4,7 @@ import '../models/journal_entry.dart';
 import '../models/reflection_questions.dart';
 import '../widgets/app_colors.dart';
 import '../services/database_service.dart';
+import '../services/reminder_service.dart';
 import '../services/speech_to_text_service.dart';
 import 'history_screen.dart';
 
@@ -129,25 +130,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _speechStatus = 'done';
   }
 
-  Future<void> _ensureSpeechReady() async {
-    if (_speechReady) return;
-
-    final granted = await _speechService.hasPermission();
-    if (!granted) {
-      if (!mounted) return;
-      setState(() {
-        _speechReady = false;
-        _speechError = 'Microphone permission not granted.';
-        _speechStatus = 'error';
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_speechError),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
+  /// Initializes speech recognition; may show the system microphone prompt
+  /// the first time it runs ([SpeechToText.initialize]).
+  Future<bool> _initializeSpeechPlugin() async {
+    if (_speechReady) return true;
 
     final ok = await _speechService.initialize(
       onError: (message) {
@@ -168,7 +154,7 @@ class _HomeScreenState extends State<HomeScreen> {
       },
     );
 
-    if (!mounted) return;
+    if (!mounted) return false;
     setState(() => _speechReady = ok);
 
     if (!ok && context.mounted) {
@@ -179,6 +165,52 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
     }
+    return ok;
+  }
+
+  Future<void> _ensureSpeechReady() async {
+    await _initializeSpeechPlugin();
+  }
+
+  /// [hasPermission] does not prompt; we explain in-app first, then [initialize] requests OS access.
+  Future<void> _promptForMicAccessOnLaunch() async {
+    if (!mounted) return;
+
+    final alreadyGranted = await _speechService.hasPermission();
+    if (!mounted) return;
+
+    if (alreadyGranted) {
+      await _initializeSpeechPlugin();
+      return;
+    }
+
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Microphone access'),
+          content: Text(
+            'MindTape uses the microphone to turn your spoken reflections into text. '
+            'You can decline and type instead — voice is optional.',
+            style: Theme.of(ctx).textTheme.bodyLarge?.copyWith(height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Not now'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Allow microphone'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted || accepted != true) return;
+    await _initializeSpeechPlugin();
   }
 
   void _goBack() {
@@ -242,6 +274,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _structuredFieldController = TextEditingController();
     _mindDumpFieldController = TextEditingController();
     _checkTodayLogged();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _promptForMicAccessOnLaunch();
+    });
   }
 
   Future<void> _checkTodayLogged() async {
@@ -255,6 +290,100 @@ class _HomeScreenState extends State<HomeScreen> {
       _checkingToday = false;
       _streakDays = streak;
     });
+  }
+
+  Future<void> _openReminderSettings() async {
+    if (_isListening || _isSaving) return;
+    var settings = await ReminderService.instance.loadSettings();
+    if (!mounted) return;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.card,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setModal) {
+            Future<void> refresh() async {
+              settings = await ReminderService.instance.loadSettings();
+              if (sheetContext.mounted) setModal(() {});
+            }
+
+            Future<void> onToggle(bool value) async {
+              if (value) {
+                final ok = await ReminderService.instance.ensureNotificationPermission();
+                if (!mounted) return;
+                if (!ok) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Notifications are off. Enable them in system settings to use reminders.'),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                  return;
+                }
+              }
+              await ReminderService.instance.setEnabled(value);
+              await refresh();
+            }
+
+            Future<void> pickTime() async {
+              final picked = await showTimePicker(
+                context: sheetContext,
+                initialTime: TimeOfDay(hour: settings.hour, minute: settings.minute),
+              );
+              if (picked == null || !sheetContext.mounted) return;
+              await ReminderService.instance.setTime(picked.hour, picked.minute);
+              await refresh();
+            }
+
+            final timeLabel = MaterialLocalizations.of(sheetContext).formatTimeOfDay(
+              TimeOfDay(hour: settings.hour, minute: settings.minute),
+              alwaysUse24HourFormat: MediaQuery.alwaysUse24HourFormatOf(sheetContext),
+            );
+
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Daily reminder',
+                    style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
+                          color: AppColors.textPrimary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'We will notify you once a day at the time you choose (default 9:00 PM).',
+                    style: Theme.of(sheetContext).textTheme.bodyMedium?.copyWith(
+                          color: AppColors.textSecondary,
+                          height: 1.35,
+                        ),
+                  ),
+                  const SizedBox(height: 16),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Remind me daily'),
+                    value: settings.enabled,
+                    onChanged: (_isListening || _isSaving) ? null : (v) => onToggle(v),
+                  ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Time'),
+                    subtitle: Text(timeLabel),
+                    trailing: const Icon(Icons.schedule),
+                    onTap: (_isListening || _isSaving) ? null : pickTime,
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _openHistory() async {
@@ -597,6 +726,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   )
                 : null,
         actions: [
+          IconButton(
+            tooltip: 'Daily reminder',
+            onPressed: (_isListening || _isSaving) ? null : _openReminderSettings,
+            icon: const Icon(Icons.notifications_outlined),
+          ),
           IconButton(
             tooltip: 'History',
             onPressed: (_isListening || _isSaving) ? null : _openHistory,
