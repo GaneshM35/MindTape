@@ -4,6 +4,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../models/journal_entry.dart';
 import '../models/reflection_questions.dart';
+import '../utils/reflection_streak.dart';
 
 /// Local SQLite persistence for [JournalEntry].
 class DatabaseService {
@@ -94,6 +95,14 @@ CREATE TABLE journal_entries (
     );
     if (rows.isEmpty) return null;
     return JournalEntry.fromMap(rows.first);
+  }
+
+  /// Distinct entry dates → current streak (see [currentStreakDayCount]).
+  Future<int> currentStreak() async {
+    final db = await database;
+    final rows = await db.query('journal_entries', columns: ['date']);
+    final keys = rows.map((r) => r['date'] as String).toSet();
+    return currentStreakDayCount(keys, DateTime.now());
   }
 
   Future<void> close() async {
