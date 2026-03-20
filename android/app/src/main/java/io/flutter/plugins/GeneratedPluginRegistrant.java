@@ -16,9 +16,24 @@ public final class GeneratedPluginRegistrant {
   private static final String TAG = "GeneratedPluginRegistrant";
   public static void registerWith(@NonNull FlutterEngine flutterEngine) {
     try {
+      flutterEngine.getPlugins().add(new com.dexterous.flutterlocalnotifications.FlutterLocalNotificationsPlugin());
+    } catch (Exception e) {
+      Log.e(TAG, "Error registering plugin flutter_local_notifications, com.dexterous.flutterlocalnotifications.FlutterLocalNotificationsPlugin", e);
+    }
+    try {
+      flutterEngine.getPlugins().add(new net.wolverinebeach.flutter_timezone.FlutterTimezonePlugin());
+    } catch (Exception e) {
+      Log.e(TAG, "Error registering plugin flutter_timezone, net.wolverinebeach.flutter_timezone.FlutterTimezonePlugin", e);
+    }
+    try {
       flutterEngine.getPlugins().add(new io.flutter.plugins.pathprovider.PathProviderPlugin());
     } catch (Exception e) {
       Log.e(TAG, "Error registering plugin path_provider_android, io.flutter.plugins.pathprovider.PathProviderPlugin", e);
+    }
+    try {
+      flutterEngine.getPlugins().add(new io.flutter.plugins.sharedpreferences.SharedPreferencesPlugin());
+    } catch (Exception e) {
+      Log.e(TAG, "Error registering plugin shared_preferences_android, io.flutter.plugins.sharedpreferences.SharedPreferencesPlugin", e);
     }
     try {
       flutterEngine.getPlugins().add(new com.csdcorp.speech_to_text.SpeechToTextPlugin());

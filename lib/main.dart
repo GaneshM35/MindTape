@@ -2,10 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'screens/home_screen.dart';
+import 'services/reminder_service.dart';
 import 'widgets/app_colors.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await ReminderService.instance.init();
+    await ReminderService.instance.applySavedSchedule();
+  } catch (e, st) {
+    debugPrint('ReminderService init failed: $e\n$st');
+  }
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarBrightness: Brightness.dark,
