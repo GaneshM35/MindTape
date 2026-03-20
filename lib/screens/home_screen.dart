@@ -42,6 +42,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _alreadyLoggedToday = false;
   JournalEntry? _todaysEntry;
   bool _editingToday = false;
+  int _streakDays = 0;
 
   String _todayKey() {
     final now = DateTime.now();
@@ -246,11 +247,13 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _checkTodayLogged() async {
     setState(() => _checkingToday = true);
     final entry = await _database.entryForDateKey(_todayKey());
+    final streak = await _database.currentStreak();
     if (!mounted) return;
     setState(() {
       _todaysEntry = entry;
       _alreadyLoggedToday = entry != null;
       _checkingToday = false;
+      _streakDays = streak;
     });
   }
 
@@ -492,6 +495,8 @@ class _HomeScreenState extends State<HomeScreen> {
       if (wasExistingToday) {
         final updated = await _database.entryForDateKey(_todayKey());
         if (!mounted) return;
+        final streak = await _database.currentStreak();
+        if (!mounted) return;
         setState(() {
           _todaysEntry = updated;
           _alreadyLoggedToday = updated != null;
@@ -499,6 +504,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _sessionMode = null;
           _resetAnswers();
           _questionIndex = 0;
+          _streakDays = streak;
         });
         _mindDumpFieldController.clear();
         _structuredFieldController.clear();
@@ -606,11 +612,15 @@ class _HomeScreenState extends State<HomeScreen> {
               ? const Center(child: CircularProgressIndicator())
               : showCompletedDay
                   ? _CompletedDayBody(
+                      streakDays: _streakDays,
                       onViewHistory: (_isListening || _isSaving) ? null : _openHistory,
                       onEditToday: (_isListening || _isSaving) ? null : _beginEditingToday,
                     )
                   : showModePicker
-                      ? _ReflectionModePicker(onPick: _pickMode)
+                      ? _ReflectionModePicker(
+                          streakDays: _streakDays,
+                          onPick: _pickMode,
+                        )
                       : showMindDump
                           ? _buildMindDumpColumn(context)
                           : _buildStructuredColumn(context, prompt!, isLast, n),
@@ -637,80 +647,82 @@ class _HomeScreenState extends State<HomeScreen> {
               borderRadius: BorderRadius.circular(20),
             ),
             padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Free flow',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w600,
-                        height: 1.25,
-                      ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'No prompts — speak or type whatever is on your mind.',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: AppColors.textSecondary,
-                        height: 1.35,
-                      ),
-                ),
-                const SizedBox(height: 20),
-                Expanded(
-                  child: Container(
+            clipBehavior: Clip.hardEdge,
+            child: SingleChildScrollView(
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Free flow',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          color: AppColors.textPrimary,
+                          fontWeight: FontWeight.w600,
+                          height: 1.25,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'No prompts — speak or type whatever is on your mind.',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: AppColors.textSecondary,
+                          height: 1.35,
+                        ),
+                  ),
+                  const SizedBox(height: 20),
+                  Container(
                     width: double.infinity,
+                    constraints: const BoxConstraints(minHeight: 160),
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: AppColors.background,
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(color: Colors.white.withOpacity(0.06)),
                     ),
-                    child: SingleChildScrollView(
-                      child: TextField(
-                        controller: _mindDumpFieldController,
-                        maxLines: null,
-                        minLines: 6,
-                        keyboardType: TextInputType.multiline,
-                        onChanged: (_) => setState(() {}),
-                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                              color: _mindDumpFieldController.text.isEmpty
-                                  ? AppColors.textSecondary
-                                  : AppColors.textPrimary,
-                              height: 1.45,
-                            ),
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          isCollapsed: true,
-                          hintText: 'Write here, or use the mic below…',
-                        ),
+                    child: TextField(
+                      controller: _mindDumpFieldController,
+                      maxLines: null,
+                      minLines: 6,
+                      keyboardType: TextInputType.multiline,
+                      scrollPadding: const EdgeInsets.only(bottom: 120),
+                      onChanged: (_) => setState(() {}),
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                            color: _mindDumpFieldController.text.isEmpty
+                                ? AppColors.textSecondary
+                                : AppColors.textPrimary,
+                            height: 1.45,
+                          ),
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        isCollapsed: true,
+                        hintText: 'Write here, or use the mic below…',
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 20),
-                Center(
-                  child: _MicButton(
-                    onPressed: _onMicPressed,
-                    isListening: _isListening,
-                    soundLevel: _soundLevel,
+                  const SizedBox(height: 20),
+                  Center(
+                    child: _MicButton(
+                      onPressed: _onMicPressed,
+                      isListening: _isListening,
+                      soundLevel: _soundLevel,
+                    ),
                   ),
-                ),
-                if (_speechStatus.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  _speechStatusText(context),
+                  if (_speechStatus.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    _speechStatusText(context),
+                  ],
+                  if (_isListening) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Mic level: ${_soundLevel.toStringAsFixed(2)}',
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
                 ],
-                if (_isListening) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    'Mic level: ${_soundLevel.toStringAsFixed(2)}',
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ],
+              ),
             ),
           ),
         ),
@@ -752,101 +764,103 @@ class _HomeScreenState extends State<HomeScreen> {
               borderRadius: BorderRadius.circular(20),
             ),
             padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  prompt.title,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w600,
-                        height: 1.25,
-                      ),
-                ),
-                if (prompt.cue != null) ...[
-                  const SizedBox(height: 8),
+            clipBehavior: Clip.hardEdge,
+            child: SingleChildScrollView(
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
                   Text(
-                    prompt.cue!,
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: AppColors.textSecondary,
-                          height: 1.35,
-                          fontStyle: FontStyle.italic,
+                    prompt.title,
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          color: AppColors.textPrimary,
+                          fontWeight: FontWeight.w600,
+                          height: 1.25,
                         ),
                   ),
-                ],
-                const SizedBox(height: 24),
-                Expanded(
-                  child: Container(
+                  if (prompt.cue != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      prompt.cue!,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: AppColors.textSecondary,
+                            height: 1.35,
+                            fontStyle: FontStyle.italic,
+                          ),
+                    ),
+                  ],
+                  const SizedBox(height: 24),
+                  Container(
                     width: double.infinity,
+                    constraints: const BoxConstraints(minHeight: 120),
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: AppColors.background,
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(color: Colors.white.withOpacity(0.06)),
                     ),
-                    child: SingleChildScrollView(
-                      child: TextField(
-                        controller: _structuredFieldController,
-                        maxLines: null,
-                        minLines: 4,
-                        keyboardType: TextInputType.multiline,
-                        onChanged: (v) =>
-                            setState(() => _answers[_questionIndex] = v),
-                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                              color: _structuredFieldController.text.isEmpty
-                                  ? AppColors.textSecondary
-                                  : AppColors.textPrimary,
-                              height: 1.45,
-                            ),
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          isCollapsed: true,
-                          hintText: 'Tap the mic and speak — or type here.',
-                        ),
+                    child: TextField(
+                      controller: _structuredFieldController,
+                      maxLines: null,
+                      minLines: 4,
+                      keyboardType: TextInputType.multiline,
+                      scrollPadding: const EdgeInsets.only(bottom: 120),
+                      onChanged: (v) =>
+                          setState(() => _answers[_questionIndex] = v),
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                            color: _structuredFieldController.text.isEmpty
+                                ? AppColors.textSecondary
+                                : AppColors.textPrimary,
+                            height: 1.45,
+                          ),
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        isCollapsed: true,
+                        hintText: 'Tap the mic and speak — or type here.',
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 28),
-                Center(
-                  child: _MicButton(
-                    onPressed: _onMicPressed,
-                    isListening: _isListening,
-                    soundLevel: _soundLevel,
+                  const SizedBox(height: 28),
+                  Center(
+                    child: _MicButton(
+                      onPressed: _onMicPressed,
+                      isListening: _isListening,
+                      soundLevel: _soundLevel,
+                    ),
                   ),
-                ),
-                if (_speechStatus.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  _speechStatusText(context),
+                  if (_speechStatus.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    _speechStatusText(context),
+                  ],
+                  if (_isListening) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Mic level: ${_soundLevel.toStringAsFixed(2)}',
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  Center(
+                    child: TextButton(
+                      onPressed: _isListening
+                          ? null
+                          : () {
+                              setState(() {
+                                _answers[_questionIndex] = '';
+                                _speechStatus = '';
+                                _speechError = '';
+                                _soundLevel = 0.0;
+                              });
+                              _structuredFieldController.clear();
+                            },
+                      child: const Text('Reset'),
+                    ),
+                  ),
                 ],
-                if (_isListening) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    'Mic level: ${_soundLevel.toStringAsFixed(2)}',
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-                const SizedBox(height: 10),
-                Center(
-                  child: TextButton(
-                    onPressed: _isListening
-                        ? null
-                        : () {
-                            setState(() {
-                              _answers[_questionIndex] = '';
-                              _speechStatus = '';
-                              _speechError = '';
-                              _soundLevel = 0.0;
-                            });
-                            _structuredFieldController.clear();
-                          },
-                    child: const Text('Reset'),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         ),
@@ -882,8 +896,12 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class _ReflectionModePicker extends StatelessWidget {
-  const _ReflectionModePicker({required this.onPick});
+  const _ReflectionModePicker({
+    required this.streakDays,
+    required this.onPick,
+  });
 
+  final int streakDays;
   final void Function(ReflectionMode mode) onPick;
 
   @override
@@ -891,6 +909,10 @@ class _ReflectionModePicker extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _HomeStreakCallout(
+          streakDays: streakDays,
+          context: _StreakCalloutContext.modePicker,
+        ),
         Text(
           'How would you like to reflect today?',
           style: Theme.of(context).textTheme.headlineSmall?.copyWith(
@@ -941,6 +963,81 @@ class _ReflectionModePicker extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+enum _StreakCalloutContext { modePicker, completed }
+
+class _HomeStreakCallout extends StatelessWidget {
+  const _HomeStreakCallout({
+    required this.streakDays,
+    required this.context,
+  });
+
+  final int streakDays;
+  final _StreakCalloutContext context;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasStreak = streakDays > 0;
+    final headline = hasStreak
+        ? (streakDays == 1 ? '1-day streak' : '$streakDays-day streak')
+        : 'No active streak';
+
+    final body = () {
+      if (!hasStreak) {
+        return 'Reflect today to begin. Miss a full day and your streak resets.';
+      }
+      switch (this.context) {
+        case _StreakCalloutContext.modePicker:
+          return 'Log today to keep your streak going.';
+        case _StreakCalloutContext.completed:
+          return 'Come back tomorrow to grow your streak.';
+      }
+    }();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withOpacity(0.10)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            hasStreak ? Icons.local_fire_department_rounded : Icons.local_fire_department_outlined,
+            color: hasStreak ? AppColors.accent : AppColors.textSecondary,
+            size: 26,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  headline,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  body,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppColors.textSecondary,
+                        height: 1.35,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1006,10 +1103,12 @@ class _ModeCard extends StatelessWidget {
 
 class _CompletedDayBody extends StatelessWidget {
   const _CompletedDayBody({
+    required this.streakDays,
     required this.onViewHistory,
     required this.onEditToday,
   });
 
+  final int streakDays;
   final VoidCallback? onViewHistory;
   final VoidCallback? onEditToday;
 
@@ -1030,6 +1129,10 @@ class _CompletedDayBody extends StatelessWidget {
                     color: AppColors.accent.withOpacity(0.95),
                   ),
                   const SizedBox(height: 20),
+                  _HomeStreakCallout(
+                    streakDays: streakDays,
+                    context: _StreakCalloutContext.completed,
+                  ),
                   Text(
                     'Entry completed for the day',
                     textAlign: TextAlign.center,
