@@ -40,12 +40,24 @@ jobs:
         run: |
           set -euo pipefail
           echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > android/app/release-key.jks
-          cat > android/key.properties <<EOF
-          storePassword=$RELEASE_KEYSTORE_PASSWORD
-          keyPassword=$RELEASE_KEY_PASSWORD
-          keyAlias=$RELEASE_KEY_ALIAS
-          storeFile=release-key.jks
-          EOF
+          # Write properties without shell interpolation in values (safe for $, !, etc.)
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          def get(name: str) -> str:
+              return os.environ[name].strip()
+
+          text = "\n".join(
+              [
+                  f"storePassword={get('RELEASE_KEYSTORE_PASSWORD')}",
+                  f"keyPassword={get('RELEASE_KEY_PASSWORD')}",
+                  f"keyAlias={get('RELEASE_KEY_ALIAS')}",
+                  "storeFile=release-key.jks",
+              ]
+          )
+          Path("android/key.properties").write_text(text + "\n", encoding="utf-8")
+          PY
 
       - name: Build release APK
         run: flutter build apk --release

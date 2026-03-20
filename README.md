@@ -68,3 +68,5 @@ base64 -w0 android/app/mindtape-release-key.jks
 ```
 
 Optional — [GitHub CLI](https://cli.github.com/): after `gh auth login`, from the repo root you can set non-binary secrets with `printf '%s' 'your-value' | gh secret set SECRET_NAME`. For the keystore, paste the base64 into the web UI or use a here-doc with `gh secret set RELEASE_KEYSTORE_BASE64`.
+
+**If CI fails with `keystore password was incorrect`:** the `.jks` in `RELEASE_KEYSTORE_BASE64` must be the **same file** you use locally, and GitHub must match `android/key.properties` exactly: `RELEASE_KEYSTORE_PASSWORD` = keystore **store** password, `RELEASE_KEY_PASSWORD` = **key** password (often the same), `RELEASE_KEY_ALIAS` = alias (e.g. `mindtape`). Re-enter secrets with no extra spaces; if unsure, update all four and re-base64 the current `android/app/*.jks` file.
