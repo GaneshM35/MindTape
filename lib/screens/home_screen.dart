@@ -1,18 +1,17 @@
 import 'package:flutter/material.dart';
 
+import '../models/journal_entry.dart';
+import '../models/reflection_questions.dart';
 import '../widgets/app_colors.dart';
+import '../services/database_service.dart';
 import '../services/speech_to_text_service.dart';
+import 'history_screen.dart';
 
 /// Guided daily flow: one question at a time with voice dictation.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
-  static const List<String> questions = [
-    'How was your day?',
-    'What did you do?',
-    'What are you grateful for?',
-    'What did you achieve?',
-  ];
+  static const List<String> questions = reflectionQuestions;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -22,18 +21,29 @@ class _HomeScreenState extends State<HomeScreen> {
   int _questionIndex = 0;
   final List<String> _answers = ['', '', '', ''];
   final SpeechToTextService _speechService = SpeechToTextService();
+  final DatabaseService _database = DatabaseService.instance;
 
   bool _isListening = false;
   bool _speechReady = false;
   String _speechStatus = '';
   String _speechError = '';
   double _soundLevel = 0.0;
+  bool _isSaving = false;
   String _pluginStatus = '';
 
   // "Resume" behavior: if the user starts listening again while there's already
   // recognized text for the current question, we append the new speech.
   String _listenBaseAnswer = '';
   bool _appendToAnswerOnResult = false;
+
+  bool _checkingToday = true;
+  bool _alreadyLoggedToday = false;
+
+  String _todayKey() {
+    final now = DateTime.now();
+    final date = DateTime(now.year, now.month, now.day);
+    return '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+  }
 
   void _setStatusFromCurrentAnswer() {
     final recognizedTrimmed = _answers[_questionIndex].trim();
@@ -126,6 +136,22 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _questionIndex++);
   }
 
+  @override
+  void initState() {
+    super.initState();
+    _checkTodayLogged();
+  }
+
+  Future<void> _checkTodayLogged() async {
+    setState(() => _checkingToday = true);
+    final entry = await _database.entryForDateKey(_todayKey());
+    if (!mounted) return;
+    setState(() {
+      _alreadyLoggedToday = entry != null;
+      _checkingToday = false;
+    });
+  }
+
   Future<void> _onMicPressed() async {
     await _ensureSpeechReady();
     if (!_speechReady) return;
@@ -191,6 +217,53 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<void> _saveEntryAndGoToHistory() async {
+    if (_isListening || _isSaving) return;
+
+    final hasAnyAnswer = _answers.any((a) => a.trim().isNotEmpty);
+    if (!hasAnyAnswer) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please add at least one answer before saving.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isSaving = true);
+    try {
+      final now = DateTime.now();
+      final date = DateTime(now.year, now.month, now.day);
+      final entry = JournalEntry(
+        date: date,
+        answer1: _answers[0].trim(),
+        answer2: _answers[1].trim(),
+        answer3: _answers[2].trim(),
+        answer4: _answers[3].trim(),
+      );
+
+      await _database.upsertEntry(entry);
+
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(
+          builder: (_) => const HistoryScreen(),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to save: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
   @override
   void dispose() {
     _speechService.stop();
@@ -206,6 +279,22 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('MindTape'),
         centerTitle: true,
+        actions: [
+          IconButton(
+            tooltip: 'History',
+            onPressed: (_isListening || _isSaving)
+                ? null
+                : () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const HistoryScreen(),
+                      ),
+                    );
+                  },
+            icon: const Icon(Icons.history),
+          ),
+          const SizedBox(width: 6),
+        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -213,6 +302,32 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              if (!_checkingToday && _alreadyLoggedToday)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: AppColors.card,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.white.withOpacity(0.10)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.check_circle, size: 18, color: AppColors.accent),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Today already logged',
+                          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                                color: AppColors.textPrimary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              if (!_checkingToday && _alreadyLoggedToday)
+                const SizedBox(height: 12),
               Text(
                 'Question ${_questionIndex + 1} of ${HomeScreen.questions.length}',
                 style: Theme.of(context).textTheme.labelLarge?.copyWith(
@@ -335,8 +450,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(width: 12),
                   Expanded(
                     child: FilledButton(
-                      onPressed: (!isLast && !_isListening) ? _goNext : null,
-                      child: Text(isLast ? 'Save' : 'Next'),
+                      onPressed: (_isListening || _isSaving)
+                          ? null
+                          : (isLast ? _saveEntryAndGoToHistory : _goNext),
+                      child: _isSaving && isLast
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Text(isLast
+                              ? (_alreadyLoggedToday ? 'Update' : 'Save')
+                              : 'Next'),
                     ),
                   ),
                 ],
