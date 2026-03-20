@@ -25,13 +25,13 @@ flutter create . --project-name mind_tape --org com.mindtape --platforms android
 
 - Project layout under `lib/` (`models/`, `services/`, `screens/`, `widgets/`)
 - `JournalEntry` model and SQLite `DatabaseService`
-- Basic `HomeScreen`: one question at a time, **Next** / **Back**, large mic
+- Basic `HomeScreen`: choose **Minimum** (3 prompts), **Deep** (8 prompts), or **Mind dump** (free text); **Next** / **Back**, mic + typing
 - Speech-to-text wired up via `speech_to_text`
   - Tap mic to start listening
   - Tap mic again to stop
   - Recognized text updates live in the answer box
 
-**MVP phase 2:** save the four answers for the day to SQLite, **History** (past days), and **Detail** (full Q&A for one day).
+**MVP phase 2:** save the day’s reflection answers (eight prompts) to SQLite, **History** (past days), and **Detail** (full Q&A for one day).
 
 ## CI/CD (GitHub Actions)
 
