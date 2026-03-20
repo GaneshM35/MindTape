@@ -45,8 +45,26 @@ Milestone releases are created when you push a version tag like `v1.0.0`.
 
 ### Android signing secrets
 
-Store these secrets in your GitHub repo settings:
-- `RELEASE_KEYSTORE_BASE64`
-- `RELEASE_KEYSTORE_PASSWORD`
-- `RELEASE_KEY_ALIAS`
-- `RELEASE_KEY_PASSWORD`
+Add these as [repository secrets](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-a-repository): **GitHub repo → Settings → Secrets and variables → Actions → New repository secret**.
+
+| Secret | Value |
+|--------|--------|
+| `RELEASE_KEYSTORE_BASE64` | Base64 of your `.jks` file, **one line** (no newlines). |
+| `RELEASE_KEYSTORE_PASSWORD` | Same as `storePassword` in `android/key.properties`. |
+| `RELEASE_KEY_ALIAS` | Same as `keyAlias` in `android/key.properties`. |
+| `RELEASE_KEY_PASSWORD` | Same as `keyPassword` in `android/key.properties`. |
+
+Generate the base64 string locally (use the path to your keystore, e.g. `android/app/mindtape-release-key.jks`):
+
+```bash
+# macOS — copy a single-line base64 string to the clipboard
+base64 -i mindtape-release-key.jks -o keystore.base64
+# Paste into the RELEASE_KEYSTORE_BASE64 secret in GitHub.
+```
+
+```bash
+# Linux (GNU coreutils) — single line, print to terminal
+base64 -w0 android/app/mindtape-release-key.jks
+```
+
+Optional — [GitHub CLI](https://cli.github.com/): after `gh auth login`, from the repo root you can set non-binary secrets with `printf '%s' 'your-value' | gh secret set SECRET_NAME`. For the keystore, paste the base64 into the web UI or use a here-doc with `gh secret set RELEASE_KEYSTORE_BASE64`.

@@ -34,12 +34,6 @@ android {
         versionName = flutter.versionName
     }
 
-    buildTypes {
-        release {
-            signingConfig = hasKeystoreProperties ? signingConfigs.release : signingConfigs.debug
-        }
-    }
-
     signingConfigs {
         if (hasKeystoreProperties) {
             release {
@@ -48,6 +42,12 @@ android {
                 storeFile file(keystoreProperties['storeFile'])
                 storePassword keystoreProperties['storePassword']
             }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = hasKeystoreProperties ? signingConfigs.release : signingConfigs.debug
         }
     }
 }

@@ -38,7 +38,7 @@ jobs:
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > android/release-key.jks
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > android/app/release-key.jks
           cat > android/key.properties <<EOF
           storePassword=$RELEASE_KEYSTORE_PASSWORD
           keyPassword=$RELEASE_KEY_PASSWORD
