@@ -1,12 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/journal_entry.dart';
 import '../models/reflection_questions.dart';
 import '../widgets/app_colors.dart';
 import '../services/database_service.dart';
+import '../services/openai_key_service.dart';
 import '../services/reminder_service.dart';
 import '../services/speech_to_text_service.dart';
+import '../services/whisper_voice_service.dart';
 import 'history_screen.dart';
+
+enum _VoiceKeyDialogAction { cancel, clear, save }
 
 /// Guided daily flow: choose reflection depth, then voice (and optional typing) capture.
 class HomeScreen extends StatefulWidget {
@@ -25,16 +31,22 @@ class _HomeScreenState extends State<HomeScreen> {
   late final TextEditingController _structuredFieldController;
   late final TextEditingController _mindDumpFieldController;
 
+  final WhisperVoiceService _voice = WhisperVoiceService.instance;
   final SpeechToTextService _speechService = SpeechToTextService();
+  final OpenAiKeyService _openAiKeys = OpenAiKeyService.instance;
   final DatabaseService _database = DatabaseService.instance;
 
+  /// True when an OpenAI key is stored or provided at build time — use Whisper.
+  bool _useWhisper = false;
+  bool _isRecording = false;
+  bool _isTranscribing = false;
   bool _isListening = false;
   bool _speechReady = false;
   String _speechStatus = '';
   String _speechError = '';
   double _soundLevel = 0.0;
   bool _isSaving = false;
-  String _pluginStatus = '';
+  Timer? _ampTimer;
 
   String _listenBaseAnswer = '';
   bool _appendToAnswerOnResult = false;
@@ -44,6 +56,13 @@ class _HomeScreenState extends State<HomeScreen> {
   JournalEntry? _todaysEntry;
   bool _editingToday = false;
   int _streakDays = 0;
+
+  bool get _voiceBusy =>
+      _isRecording || _isTranscribing || _isListening;
+
+  Future<void> _loadVoiceBackend() async {
+    _useWhisper = await _openAiKeys.hasWhisperKey();
+  }
 
   String _todayKey() {
     final now = DateTime.now();
@@ -130,10 +149,27 @@ class _HomeScreenState extends State<HomeScreen> {
     _speechStatus = 'done';
   }
 
-  /// Initializes speech recognition; may show the system microphone prompt
-  /// the first time it runs ([SpeechToText.initialize]).
-  Future<bool> _initializeSpeechPlugin() async {
+  /// Whisper when an API key is set (prefs or `--dart-define`); otherwise on-device speech.
+  Future<bool> _initializeVoiceCapture() async {
     if (_speechReady) return true;
+
+    await _loadVoiceBackend();
+    if (!mounted) return false;
+
+    if (_useWhisper) {
+      if (!await _openAiKeys.hasWhisperKey()) {
+        setState(() {
+          _speechReady = false;
+          _speechError = 'Missing OpenAI API key';
+        });
+        return false;
+      }
+      setState(() {
+        _speechReady = true;
+        _speechError = '';
+      });
+      return true;
+    }
 
     final ok = await _speechService.initialize(
       onError: (message) {
@@ -141,26 +177,23 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() => _speechError = message);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(message.isNotEmpty ? message : 'Speech recognition error'),
+            content: Text(
+              message.isNotEmpty ? message : 'Speech recognition error',
+            ),
             behavior: SnackBarBehavior.floating,
           ),
         );
       },
-      onStatus: (status) {
-        if (!mounted) return;
-        setState(() {
-          _pluginStatus = status;
-        });
-      },
+      onStatus: (_) {},
     );
-
     if (!mounted) return false;
     setState(() => _speechReady = ok);
-
     if (!ok && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Speech recognition is not available on this device.'),
+          content: Text(
+            'Speech recognition is not available on this device.',
+          ),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -168,19 +201,22 @@ class _HomeScreenState extends State<HomeScreen> {
     return ok;
   }
 
-  Future<void> _ensureSpeechReady() async {
-    await _initializeSpeechPlugin();
+  Future<void> _ensureVoiceReady() async {
+    await _initializeVoiceCapture();
   }
 
-  /// [hasPermission] does not prompt; we explain in-app first, then [initialize] requests OS access.
   Future<void> _promptForMicAccessOnLaunch() async {
     if (!mounted) return;
+    await _loadVoiceBackend();
+    if (!mounted) return;
 
-    final alreadyGranted = await _speechService.hasPermission();
+    final alreadyGranted = _useWhisper
+        ? await _voice.hasMicPermission(request: false)
+        : await _speechService.hasPermission();
     if (!mounted) return;
 
     if (alreadyGranted) {
-      await _initializeSpeechPlugin();
+      await _initializeVoiceCapture();
       return;
     }
 
@@ -191,8 +227,11 @@ class _HomeScreenState extends State<HomeScreen> {
         return AlertDialog(
           title: const Text('Microphone access'),
           content: Text(
-            'MindTape uses the microphone to turn your spoken reflections into text. '
-            'You can decline and type instead — voice is optional.',
+            _useWhisper
+                ? 'MindTape records short clips and sends them to OpenAI Whisper for transcription. '
+                    'You can decline and type instead — voice is optional.'
+                : 'MindTape uses the microphone to turn your spoken reflections into text. '
+                    'You can decline and type instead — voice is optional.',
             style: Theme.of(ctx).textTheme.bodyLarge?.copyWith(height: 1.4),
           ),
           actions: [
@@ -210,11 +249,14 @@ class _HomeScreenState extends State<HomeScreen> {
     );
 
     if (!mounted || accepted != true) return;
-    await _initializeSpeechPlugin();
+    if (_useWhisper) {
+      await _voice.hasMicPermission(request: true);
+    }
+    await _initializeVoiceCapture();
   }
 
   void _goBack() {
-    if (_isListening) return;
+    if (_voiceBusy) return;
     if (_questionIndex <= 0) return;
     setState(() => _questionIndex--);
     _syncStructuredFieldFromAnswers();
@@ -229,7 +271,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _goNext() {
-    if (_isListening) return;
+    if (_voiceBusy) return;
     final n = _structuredPromptCount;
     if (n == 0) return;
     if (_questionIndex >= n - 1) return;
@@ -244,7 +286,6 @@ class _HomeScreenState extends State<HomeScreen> {
       _resetAnswers();
       _speechStatus = '';
       _speechError = '';
-      _pluginStatus = '';
       _soundLevel = 0.0;
     });
     _mindDumpFieldController.clear();
@@ -254,14 +295,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _leaveFlowToModePicker() {
-    if (_isListening || _isSaving) return;
+    if (_voiceBusy || _isSaving) return;
     setState(() {
       _sessionMode = null;
       _questionIndex = 0;
       _resetAnswers();
       _speechStatus = '';
       _speechError = '';
-      _pluginStatus = '';
       _soundLevel = 0.0;
     });
     _mindDumpFieldController.clear();
@@ -274,8 +314,11 @@ class _HomeScreenState extends State<HomeScreen> {
     _structuredFieldController = TextEditingController();
     _mindDumpFieldController = TextEditingController();
     _checkTodayLogged();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _promptForMicAccessOnLaunch();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await _loadVoiceBackend();
+      if (mounted) setState(() {});
+      if (mounted) await _promptForMicAccessOnLaunch();
     });
   }
 
@@ -293,7 +336,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _openReminderSettings() async {
-    if (_isListening || _isSaving) return;
+    if (_voiceBusy || _isSaving) return;
     var settings = await ReminderService.instance.loadSettings();
     if (!mounted) return;
 
@@ -368,14 +411,14 @@ class _HomeScreenState extends State<HomeScreen> {
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Remind me daily'),
                     value: settings.enabled,
-                    onChanged: (_isListening || _isSaving) ? null : (v) => onToggle(v),
+                    onChanged: (_voiceBusy || _isSaving) ? null : (v) => onToggle(v),
                   ),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Time'),
                     subtitle: Text(timeLabel),
                     trailing: const Icon(Icons.schedule),
-                    onTap: (_isListening || _isSaving) ? null : pickTime,
+                    onTap: (_voiceBusy || _isSaving) ? null : pickTime,
                   ),
                 ],
               ),
@@ -387,7 +430,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _openHistory() async {
-    if (_isListening || _isSaving) return;
+    if (_voiceBusy || _isSaving) return;
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (_) => const HistoryScreen(),
@@ -398,7 +441,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _beginEditingToday() {
     final e = _todaysEntry;
-    if (e == null || _isListening || _isSaving) return;
+    if (e == null || _voiceBusy || _isSaving) return;
     setState(() {
       _editingToday = true;
       _sessionMode = e.mode;
@@ -411,7 +454,6 @@ class _HomeScreenState extends State<HomeScreen> {
       _questionIndex = 0;
       _speechStatus = '';
       _speechError = '';
-      _pluginStatus = '';
       _soundLevel = 0.0;
     });
     if (e.mode == ReflectionMode.mindDump) {
@@ -425,7 +467,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _cancelEditingToday() {
-    if (_isListening || _isSaving) return;
+    if (_voiceBusy || _isSaving) return;
     setState(() {
       _editingToday = false;
       _sessionMode = null;
@@ -433,17 +475,178 @@ class _HomeScreenState extends State<HomeScreen> {
       _resetAnswers();
       _speechStatus = '';
       _speechError = '';
-      _pluginStatus = '';
       _soundLevel = 0.0;
     });
     _mindDumpFieldController.clear();
     _structuredFieldController.clear();
   }
 
-  Future<void> _onMicPressed() async {
-    await _ensureSpeechReady();
-    if (!_speechReady) return;
+  void _stopAmplitudeTimer() {
+    _ampTimer?.cancel();
+    _ampTimer = null;
+  }
 
+  void _startAmplitudeTimer() {
+    _stopAmplitudeTimer();
+    _ampTimer = Timer.periodic(const Duration(milliseconds: 120), (_) async {
+      if (!_isRecording || !mounted) return;
+      final a = await _voice.getAmplitude();
+      if (!mounted) return;
+      setState(() {
+        _soundLevel = ((a.current + 55) / 55).clamp(0.0, 1.0);
+      });
+    });
+  }
+
+  Future<void> _onMicPressed() async {
+    await _ensureVoiceReady();
+    if (!_speechReady) {
+      if (mounted && _useWhisper) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Add a valid OpenAI API key (key icon) to use Whisper.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    if (_useWhisper) {
+      await _onMicPressedWhisper();
+    } else {
+      await _onMicPressedSpeech();
+    }
+  }
+
+  Future<void> _onMicPressedWhisper() async {
+    if (_isTranscribing) return;
+
+    if (_isRecording) {
+      _stopAmplitudeTimer();
+      setState(() {
+        _isRecording = false;
+        _isTranscribing = true;
+        _speechStatus = 'transcribing';
+        _speechError = '';
+      });
+      try {
+        final key = await _openAiKeys.getEffectiveKey();
+        final text = await _voice.stopAndTranscribe(key);
+        if (!mounted) return;
+        if (text.isEmpty) {
+          setState(() {
+            _isTranscribing = false;
+            _speechStatus = 'no_speech_detected';
+          });
+          return;
+        }
+
+        if (_sessionMode == ReflectionMode.mindDump) {
+          final String next;
+          if (_appendToAnswerOnResult) {
+            final base = _listenBaseAnswer.trim();
+            next = (base.isEmpty ? '' : '$base ') + text;
+          } else {
+            next = text;
+          }
+          _mindDumpFieldController.value = TextEditingValue(
+            text: next,
+            selection: TextSelection.collapsed(offset: next.length),
+          );
+          setState(() {
+            _setStatusFromMindDump();
+            _isTranscribing = false;
+            _speechStatus = 'done';
+          });
+        } else {
+          setState(() {
+            if (_appendToAnswerOnResult) {
+              final base = _listenBaseAnswer.trim();
+              _answers[_questionIndex] =
+                  (base.isEmpty ? '' : '$base ') + text;
+            } else {
+              _answers[_questionIndex] = text;
+            }
+            final t = _answers[_questionIndex];
+            _structuredFieldController.value = TextEditingValue(
+              text: t,
+              selection: TextSelection.collapsed(offset: t.length),
+            );
+            _setStatusFromCurrentAnswer();
+            _isTranscribing = false;
+            _speechStatus = 'done';
+          });
+        }
+      } catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _isTranscribing = false;
+          _speechError = e.toString();
+          _speechStatus = 'error';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Transcription failed: $e'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    final micOk = await _voice.hasMicPermission(request: true);
+    if (!mounted) return;
+    if (!micOk) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Microphone permission is required to record.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    try {
+      await _voice.startRecording();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not start recording: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isRecording = true;
+      _speechStatus = '';
+      _speechError = '';
+      _soundLevel = 0.0;
+
+      if (_sessionMode == ReflectionMode.mindDump) {
+        _listenBaseAnswer = _mindDumpFieldController.text;
+        _appendToAnswerOnResult = _listenBaseAnswer.trim().isNotEmpty;
+        if (!_appendToAnswerOnResult) {
+          _mindDumpFieldController.clear();
+        }
+      } else {
+        _listenBaseAnswer = _answers[_questionIndex];
+        _appendToAnswerOnResult = _listenBaseAnswer.trim().isNotEmpty;
+        if (!_appendToAnswerOnResult) {
+          _answers[_questionIndex] = '';
+          _structuredFieldController.clear();
+        }
+      }
+    });
+    _startAmplitudeTimer();
+  }
+
+  Future<void> _onMicPressedSpeech() async {
     if (_sessionMode == ReflectionMode.mindDump) {
       if (_isListening) {
         await _speechService.stop();
@@ -458,7 +661,6 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _isListening = true;
         _speechStatus = '';
-        _pluginStatus = '';
         _speechError = '';
         _soundLevel = 0.0;
 
@@ -470,7 +672,7 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       });
 
-      _speechService.listen(
+      await _speechService.listen(
         onResult: (result) {
           if (!mounted) return;
           final recognized = result.recognizedWords;
@@ -517,7 +719,6 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _isListening = true;
       _speechStatus = '';
-      _pluginStatus = '';
       _speechError = '';
       _soundLevel = 0.0;
 
@@ -530,7 +731,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
 
-    _speechService.listen(
+    await _speechService.listen(
       onResult: (result) {
         if (!mounted) return;
         final recognized = result.recognizedWords;
@@ -564,6 +765,100 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<void> _openVoiceSettings() async {
+    if (_voiceBusy || _isSaving) return;
+    final stored = await _openAiKeys.getUserStoredKey();
+    if (!mounted) return;
+
+    final controller = TextEditingController(text: stored);
+
+    final result = await showDialog<_VoiceKeyDialogAction>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Voice & Whisper'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Enter an OpenAI API key to transcribe with Whisper (cloud). '
+                  'Leave empty to use on-device speech recognition instead.',
+                  style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
+                        color: AppColors.textSecondary,
+                        height: 1.35,
+                      ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: controller,
+                  obscureText: true,
+                  autocorrect: false,
+                  decoration: const InputDecoration(
+                    labelText: 'OpenAI API key',
+                    hintText: 'sk-…',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () =>
+                  Navigator.pop(ctx, _VoiceKeyDialogAction.cancel),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () =>
+                  Navigator.pop(ctx, _VoiceKeyDialogAction.clear),
+              child: const Text('Clear key'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.pop(ctx, _VoiceKeyDialogAction.save),
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+
+    final entered = controller.text;
+    controller.dispose();
+    if (!mounted || result == null || result == _VoiceKeyDialogAction.cancel) {
+      return;
+    }
+
+    if (result == _VoiceKeyDialogAction.clear) {
+      await _openAiKeys.saveKey('');
+    } else {
+      await _openAiKeys.saveKey(entered);
+    }
+    if (!mounted) return;
+
+    setState(() {
+      _speechReady = false;
+      _speechStatus = '';
+      _speechError = '';
+    });
+    await _loadVoiceBackend();
+    if (!mounted) return;
+    setState(() {});
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          await _openAiKeys.hasWhisperKey()
+              ? 'Whisper enabled. On-device speech is off while a key is set.'
+              : 'Using on-device speech. Add a key anytime to use Whisper.',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   bool _hasContentToSave() {
     if (_sessionMode == null) return false;
     if (_sessionMode == ReflectionMode.mindDump) {
@@ -574,7 +869,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _saveEntryAndGoToHistory() async {
-    if (_isListening || _isSaving || _sessionMode == null) return;
+    if (_voiceBusy || _isSaving || _sessionMode == null) return;
 
     if (!_hasContentToSave()) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -665,20 +960,24 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _speechStatusText(BuildContext context) {
+    final msg = switch (_speechStatus) {
+      'transcribing' => 'Transcribing with Whisper…',
+      'no_speech_detected' => _speechError.isNotEmpty
+          ? 'Voice error: $_speechError'
+          : (_useWhisper
+              ? 'No speech detected in the recording. Try again.'
+              : 'No speech detected. Check mic & language packs, then try again.'),
+      'no_recognition' =>
+        'Mic heard audio, but speech recognition returned no text.',
+      'no_additional_speech' => _useWhisper
+          ? 'Nothing new to add. Tap the mic to record again.'
+          : 'No additional speech captured. Tap mic again to try again.',
+      'done' => _useWhisper ? 'Transcription complete' : 'Speech complete',
+      'error' => 'Voice error: $_speechError',
+      _ => _useWhisper ? 'Voice: $_speechStatus' : 'Speech: $_speechStatus',
+    };
     return Text(
-      _speechStatus == 'no_speech_detected'
-          ? (_speechError.isNotEmpty
-              ? 'Speech error: $_speechError'
-              : 'No speech detected. Check mic & language packs, then try again.')
-          : (_speechStatus == 'no_recognition'
-              ? 'Mic heard audio, but speech recognition returned no text.'
-              : (_speechStatus == 'no_additional_speech'
-                  ? 'No additional speech captured. Tap mic again to try again.'
-                  : (_speechStatus == 'done'
-                      ? 'Speech complete'
-                      : (_speechStatus == 'error'
-                          ? 'Speech error: $_speechError'
-                          : 'Speech: $_speechStatus')))),
+      msg,
       style: Theme.of(context).textTheme.labelLarge?.copyWith(
             color: AppColors.textSecondary,
           ),
@@ -688,7 +987,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    _speechService.stop();
+    _stopAmplitudeTimer();
+    unawaited(_speechService.stop());
+    unawaited(_voice.stopIfRecording());
+    unawaited(_voice.dispose());
     _structuredFieldController.dispose();
     _mindDumpFieldController.dispose();
     super.dispose();
@@ -715,25 +1017,30 @@ class _HomeScreenState extends State<HomeScreen> {
         leading: _editingToday
             ? IconButton(
                 tooltip: 'Close editor',
-                onPressed: (_isListening || _isSaving) ? null : _cancelEditingToday,
+                onPressed: (_voiceBusy || _isSaving) ? null : _cancelEditingToday,
                 icon: const Icon(Icons.close),
               )
             : (!showCompletedDay && !_checkingToday && _sessionMode != null)
                 ? IconButton(
                     tooltip: 'Choose another mode',
-                    onPressed: (_isListening || _isSaving) ? null : _leaveFlowToModePicker,
+                    onPressed: (_voiceBusy || _isSaving) ? null : _leaveFlowToModePicker,
                     icon: const Icon(Icons.arrow_back),
                   )
                 : null,
         actions: [
           IconButton(
+            tooltip: 'Voice & OpenAI key',
+            onPressed: (_voiceBusy || _isSaving) ? null : _openVoiceSettings,
+            icon: const Icon(Icons.vpn_key_outlined),
+          ),
+          IconButton(
             tooltip: 'Daily reminder',
-            onPressed: (_isListening || _isSaving) ? null : _openReminderSettings,
+            onPressed: (_voiceBusy || _isSaving) ? null : _openReminderSettings,
             icon: const Icon(Icons.notifications_outlined),
           ),
           IconButton(
             tooltip: 'History',
-            onPressed: (_isListening || _isSaving) ? null : _openHistory,
+            onPressed: (_voiceBusy || _isSaving) ? null : _openHistory,
             icon: const Icon(Icons.history),
           ),
           const SizedBox(width: 6),
@@ -747,8 +1054,8 @@ class _HomeScreenState extends State<HomeScreen> {
               : showCompletedDay
                   ? _CompletedDayBody(
                       streakDays: _streakDays,
-                      onViewHistory: (_isListening || _isSaving) ? null : _openHistory,
-                      onEditToday: (_isListening || _isSaving) ? null : _beginEditingToday,
+                      onViewHistory: (_voiceBusy || _isSaving) ? null : _openHistory,
+                      onEditToday: (_voiceBusy || _isSaving) ? null : _beginEditingToday,
                     )
                   : showModePicker
                       ? _ReflectionModePicker(
@@ -761,6 +1068,11 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  double _answerFieldMaxHeight(BuildContext context) {
+    final h = MediaQuery.sizeOf(context).height;
+    return (h * (_editingToday ? 0.46 : 0.34)).clamp(200.0, 560.0);
   }
 
   Widget _buildMindDumpColumn(BuildContext context) {
@@ -806,7 +1118,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 20),
                   Container(
                     width: double.infinity,
-                    constraints: const BoxConstraints(minHeight: 160),
+                    constraints: BoxConstraints(
+                      minHeight: 160,
+                      maxHeight: _answerFieldMaxHeight(context),
+                    ),
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: AppColors.background,
@@ -815,8 +1130,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     child: TextField(
                       controller: _mindDumpFieldController,
+                      expands: true,
                       maxLines: null,
-                      minLines: 6,
                       keyboardType: TextInputType.multiline,
                       scrollPadding: const EdgeInsets.only(bottom: 120),
                       onChanged: (_) => setState(() {}),
@@ -826,29 +1141,46 @@ class _HomeScreenState extends State<HomeScreen> {
                                 : AppColors.textPrimary,
                             height: 1.45,
                           ),
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         border: InputBorder.none,
                         isCollapsed: true,
-                        hintText: 'Write here, or use the mic below…',
+                        hintText: _editingToday
+                            ? 'Edit your text…'
+                            : (_useWhisper
+                                ? 'Type here, or tap the mic to record (Whisper)…'
+                                : 'Type here, or tap the mic to speak…'),
                       ),
                     ),
                   ),
-                  const SizedBox(height: 20),
-                  Center(
-                    child: _MicButton(
-                      onPressed: _onMicPressed,
-                      isListening: _isListening,
-                      soundLevel: _soundLevel,
+                  if (!_editingToday) ...[
+                    const SizedBox(height: 20),
+                    Center(
+                      child: _MicButton(
+                        onPressed: _onMicPressed,
+                        isRecording: _useWhisper ? _isRecording : _isListening,
+                        isTranscribing: _useWhisper && _isTranscribing,
+                        soundLevel: _soundLevel,
+                      ),
                     ),
-                  ),
+                  ],
                   if (_speechStatus.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     _speechStatusText(context),
                   ],
-                  if (_isListening) ...[
+                  if (_useWhisper && _isRecording) ...[
                     const SizedBox(height: 8),
                     Text(
-                      'Mic level: ${_soundLevel.toStringAsFixed(2)}',
+                      'Recording… tap mic again to transcribe',
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                  if (!_useWhisper && _isListening) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Listening… tap mic to stop',
                       style: Theme.of(context).textTheme.labelLarge?.copyWith(
                             color: AppColors.textSecondary,
                           ),
@@ -862,7 +1194,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         const SizedBox(height: 20),
         FilledButton(
-          onPressed: (_isListening || _isSaving) ? null : _saveEntryAndGoToHistory,
+          onPressed: (_voiceBusy || _isSaving) ? null : _saveEntryAndGoToHistory,
           child: _isSaving
               ? const SizedBox(
                   width: 18,
@@ -926,7 +1258,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 24),
                   Container(
                     width: double.infinity,
-                    constraints: const BoxConstraints(minHeight: 120),
+                    constraints: BoxConstraints(
+                      minHeight: 120,
+                      maxHeight: _answerFieldMaxHeight(context),
+                    ),
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: AppColors.background,
@@ -935,8 +1270,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     child: TextField(
                       controller: _structuredFieldController,
+                      expands: true,
                       maxLines: null,
-                      minLines: 4,
                       keyboardType: TextInputType.multiline,
                       scrollPadding: const EdgeInsets.only(bottom: 120),
                       onChanged: (v) =>
@@ -947,29 +1282,46 @@ class _HomeScreenState extends State<HomeScreen> {
                                 : AppColors.textPrimary,
                             height: 1.45,
                           ),
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         border: InputBorder.none,
                         isCollapsed: true,
-                        hintText: 'Tap the mic and speak — or type here.',
+                        hintText: _editingToday
+                            ? 'Edit your answer…'
+                            : (_useWhisper
+                                ? 'Tap the mic to record (Whisper), or type here.'
+                                : 'Tap the mic to speak, or type here.'),
                       ),
                     ),
                   ),
-                  const SizedBox(height: 28),
-                  Center(
-                    child: _MicButton(
-                      onPressed: _onMicPressed,
-                      isListening: _isListening,
-                      soundLevel: _soundLevel,
+                  if (!_editingToday) ...[
+                    const SizedBox(height: 28),
+                    Center(
+                      child: _MicButton(
+                        onPressed: _onMicPressed,
+                        isRecording: _useWhisper ? _isRecording : _isListening,
+                        isTranscribing: _useWhisper && _isTranscribing,
+                        soundLevel: _soundLevel,
+                      ),
                     ),
-                  ),
+                  ],
                   if (_speechStatus.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     _speechStatusText(context),
                   ],
-                  if (_isListening) ...[
+                  if (_useWhisper && _isRecording) ...[
                     const SizedBox(height: 8),
                     Text(
-                      'Mic level: ${_soundLevel.toStringAsFixed(2)}',
+                      'Recording… tap mic again to transcribe',
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                  if (!_useWhisper && _isListening) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Listening… tap mic to stop',
                       style: Theme.of(context).textTheme.labelLarge?.copyWith(
                             color: AppColors.textSecondary,
                           ),
@@ -979,7 +1331,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 10),
                   Center(
                     child: TextButton(
-                      onPressed: _isListening
+                      onPressed: _voiceBusy
                           ? null
                           : () {
                               setState(() {
@@ -1003,14 +1355,14 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Expanded(
               child: OutlinedButton(
-                onPressed: (_questionIndex > 0 && !_isListening) ? _goBack : null,
+                onPressed: (_questionIndex > 0 && !_voiceBusy) ? _goBack : null,
                 child: const Text('Back'),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: FilledButton(
-                onPressed: (_isListening || _isSaving)
+                onPressed: (_voiceBusy || _isSaving)
                     ? null
                     : (isLast ? _saveEntryAndGoToHistory : _goNext),
                 child: _isSaving && isLast
@@ -1317,44 +1669,60 @@ class _CompletedDayBody extends StatelessWidget {
 class _MicButton extends StatelessWidget {
   const _MicButton({
     required this.onPressed,
-    required this.isListening,
+    required this.isRecording,
+    required this.isTranscribing,
     required this.soundLevel,
   });
 
   final VoidCallback onPressed;
-  final bool isListening;
+  final bool isRecording;
+  final bool isTranscribing;
   final double soundLevel;
 
   @override
   Widget build(BuildContext context) {
+    if (isTranscribing) {
+      return const SizedBox(
+        width: 96,
+        height: 96,
+        child: Center(
+          child: SizedBox(
+            width: 36,
+            height: 36,
+            child: CircularProgressIndicator(strokeWidth: 2.5),
+          ),
+        ),
+      );
+    }
+
     final level = soundLevel.clamp(0.0, 1.0);
-    final bgColor = isListening
+    final bgColor = isRecording
         ? AppColors.accent.withOpacity(1.0)
         : AppColors.accent.withOpacity(0.55);
-    final double glow = isListening ? 8.0 + (level * 28.0) : 6.0;
+    final double glow = isRecording ? 8.0 + (level * 28.0) : 6.0;
 
     return Material(
       color: bgColor,
       shape: CircleBorder(
         side: BorderSide(
-          color: isListening
+          color: isRecording
               ? Colors.white.withOpacity(0.28)
               : Colors.white.withOpacity(0.10),
-          width: isListening ? 1.6 : 1.2,
+          width: isRecording ? 1.6 : 1.2,
         ),
       ),
       elevation: glow,
-      shadowColor: AppColors.accent.withOpacity(isListening ? 0.75 : 0.35),
+      shadowColor: AppColors.accent.withOpacity(isRecording ? 0.75 : 0.35),
       child: AnimatedScale(
         duration: const Duration(milliseconds: 180),
-        scale: isListening ? 1.08 : 1.0,
+        scale: isRecording ? 1.08 : 1.0,
         child: InkWell(
           customBorder: CircleBorder(
             side: BorderSide(
-              color: isListening
+              color: isRecording
                   ? Colors.white.withOpacity(0.28)
                   : Colors.white.withOpacity(0.10),
-              width: isListening ? 1.6 : 1.2,
+              width: isRecording ? 1.6 : 1.2,
             ),
           ),
           onTap: onPressed,
@@ -1362,9 +1730,9 @@ class _MicButton extends StatelessWidget {
             width: 96,
             height: 96,
             child: Icon(
-              Icons.mic,
+              isRecording ? Icons.stop_rounded : Icons.mic,
               size: 44,
-              color: isListening ? Colors.white : Colors.white.withOpacity(0.9),
+              color: isRecording ? Colors.white : Colors.white.withOpacity(0.9),
             ),
           ),
         ),

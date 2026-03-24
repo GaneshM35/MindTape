@@ -4,9 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: android-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-apk:
@@ -30,6 +35,11 @@ jobs:
 
       - name: Flutter pub get
         run: flutter pub get
+
+      - name: Dart analyze
+        run: |
+          set -euo pipefail
+          dart analyze lib/
 
       - name: Decode signing keystore
         env:
@@ -60,12 +70,19 @@ jobs:
           PY
 
       - name: Build release APK
+        env:
+          # Optional: embeds a compile-time Whisper fallback (same as local --dart-define).
+          # If unset, the APK still builds; voice uses on-device recognition until the user
+          # adds a key in the app (key icon) or you set this secret later.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          flutter build apk --release
+          flutter build apk --release \
+            --dart-define=OPENAI_API_KEY="${OPENAI_API_KEY:-}"
           mv build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/mindtape.apk
 
       - name: Create GitHub Release
+        if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -73,3 +90,9 @@ jobs:
           files: build/app/outputs/flutter-apk/mindtape.apk
           fail_on_unmatched_files: true
 
+      - name: Upload APK artifact (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mindtape-apk
+          path: build/app/outputs/flutter-apk/mindtape.apk
